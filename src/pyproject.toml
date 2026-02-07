@@ -5,16 +5,24 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "insightface>=0.7.3",
     "isc-feature-extractor",
     "loguru>=0.7.3",
     "matplotlib>=3.10.6",
+    "numpy>=2.1.2",
+    "onnxruntime<1.20",
     "opencv-python>=4.12.0.88",
+    "pandas>=2.3.3",
     "polars>=1.34.0",
+    "safetensors>=0.6.2",
+    "scikit-learn>=1.7.2",
     "torch==2.6.0",
     "torchaudio==2.6.0",
     "torchmetrics>=1.0.3",
     "torchvision==0.21.0",
+    "tqdm>=4.66.5",
     "transformers>=4.56.0",
+    "ultralytics>=8.4.12",
 ]
 
 [[tool.uv.index]]
