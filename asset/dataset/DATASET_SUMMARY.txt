@@ -1,0 +1,31 @@
+Dataset Summary
+================================================================================
+
+Total videos: 30000
+Face forgery videos: 15000
+Lip forgery videos: 15000
+Max duration: 20.0s
+Random seed: 42
+
+Train set: 24000 videos (80.0%)
+Valid set: 3000 videos (10.0%)
+Test set: 3000 videos (10.0%)
+
+Category distribution:
+  face_audiomismatch_textmismatch: 5706
+  face_rvc_textmismatch: 4152
+  face_tts: 1555
+  face_tts_textgen: 3587
+  lip_audiomismatch_textmismatch: 5000
+  lip_rvc_textmismatch: 5000
+  lip_tts_textgen: 5000
+
+CSV files in `asset/dataset/` with columns:
+- `id`: video UUID
+- `origin_id`: original video ID (4-digit zero-padded)
+- `gt_start_f`, `gt_end_f`: ground truth frame range
+- `fps`, `frames`: video metadata
+- `category`: forgery type (e.g., "face_tts_textgen", "lip_rvc_textmismatch")
+- `celebrity`, `method`: person and manipulation method
+
+`similar.csv` contains each video in the vorpus along with the IDs of its top 10 most similar videos, separated by -, which are used to construct negative samples during segment-level source tracing.
