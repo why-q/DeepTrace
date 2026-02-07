@@ -1,0 +1,538 @@
+\chapter{面向视频伪造的片段级溯源研究}
+
+本章聚焦于深度伪造视频的片段级溯源问题。针对现有深度伪造检测方法仅能判断视频是否经过篡改、而缺乏可解释性和取证能力的局限，本章提出片段级深度伪造视频源溯源任务，旨在将篡改内容精确追溯至源视频中的对应片段。本章首先明确任务定义并分析核心挑战；随后介绍首个专用数据集DeepTrace的构建，并设计完整的评估基准框架；通过对多种现有方法的系统评估，揭示当前特征描述符在高视觉相似场景下的局限性；针对这一问题，本章进一步提出基于DINOv3的多层特征聚合与对比学习微调的特征增强方法，实验结果表明该方法显著提升了片段级溯源的性能。
+
+\section{任务定义}
+
+如第一章所述，当需要法律证据时，仅提供概率性结果的传统深度伪造检测方法往往不足以满足需求。识别原始源视频是反驳虚假信息的有效途径，然而在篡改发生于长视频中的情况下，仅识别源视频可能是不够的，因为将整段原始视频作为证据呈现缺乏针对性。为解决这一问题，本章提出片段级伪造溯源任务：不仅追溯至原始素材，还需精确定位源视频中与篡改内容相对应的具体片段。
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.7\textwidth]{../images/task_vis.png}
+    \caption{片段级深度伪造视频源溯源任务示意图。给定一个伪造视频，任务目标是找到其源视频并定位篡改前的原始片段。}
+    \label{fig:task_vis}
+\end{figure}
+
+这种细粒度的定义能够识别伪造内容的确切来源，并提供详细的篡改信息。该任务的意义体现在以下几个方面：首先，它显著推进了深度伪造取证研究，为反制虚假信息提供了更有力的技术支撑；其次，它增强了数字证据的法律可采性，使得溯源结果能够作为更具说服力的证据呈堂；最后，它为深度伪造检测提供了可解释性，不仅回答"是否伪造"的问题，还能回答"源自何处"的问题。
+
+形式化地，给定一个伪造视频$V_f$和一个包含$N$个原始视频的视频库$\mathcal{C} = \{V_1, V_2, ..., V_N\}$，片段级深度伪造视频源溯源任务的目标是：
+\begin{enumerate}
+    \item 视频级溯源：从视频库$\mathcal{C}$中找到伪造视频$V_f$对应的源视频$V_s$；
+    \item 片段级溯源：在源视频$V_s$中精确定位被篡改前的原始片段，即确定其起始时间$t_{start}$和结束时间$t_{end}$。
+\end{enumerate}
+
+\section{核心挑战分析}
+
+本任务面临的核心挑战可归纳为以下几点：
+
+\textbf{研究空白与框架缺失}。片段级深度伪造视频源溯源是一个全新的研究方向，目前尚无相关工作涉及这一领域。现有研究主要集中于视频级溯源或传统的视频拷贝检测，缺乏针对片段级深度伪造溯源的专用数据集、评估基准和方法框架。因此，本研究需要从零开始构建完整的研究基础设施，包括数据集的采集与标注、评估指标的设计、以及基准方法的建立。
+
+\textbf{高度视觉相似性}。深度伪造视频的源素材主要来源于名人演讲、访谈和公开发言等场景。在这些场景中，同一人物可能多次出现在相似的环境中——例如同一电视节目的不同期、外交官员在同一场地的不同发言等。这导致视频库中存在大量"困难负样本"（hard negatives），即视觉上高度相似但实际上不同的视频片段。
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=1.0\textwidth]{../images/similar_video_example.png}
+    \caption{视频内和视频间高度场景相似性示例。同一人物在不同场合出现时，背景、光照、姿态等视觉特征高度相似，这为片段级溯源带来了巨大挑战。}
+    \label{fig:similar_video_example}
+\end{figure*}
+
+\textbf{低运动特性}。与传统视频拷贝检测场景不同，深度伪造素材通常以"说话人头像"为主，主体运动幅度有限。这意味着基于光流等运动特征的方法在此场景下效果不佳，因为相邻帧之间的运动信息过于稀疏。
+
+\textbf{生成式篡改}。深度伪造涉及面部替换、唇形同步等生成式操作，这些操作会在人脸区域引入不可预测的变化。因此，过度依赖面部特征的方法可能会因面部区域的篡改而导致特征失配，从而影响溯源性能。
+
+\textbf{特征混淆问题}。在高重复场景中，现有特征描述符难以有效区分细粒度的差异，特别是对于人物的非面部区域（如姿态、手势、背景细节）的敏感度不足。这导致在特征相似度矩阵中出现大量高相似度区域，使得传统的路径规划算法（如动态规划、动态时间规整）难以准确定位正确的匹配片段。
+
+\section{数据集构建}
+
+由于该领域的研究尚处于起步阶段，此前并未针对片段级深度伪造溯源任务进行过系统性探讨，缺乏可供参考的既有数据集与开源资源。为填补这一空白，本章构建了首个专门针对片段级深度伪造视频源溯源的数据集——DeepTrace。
+
+\subsection{数据集概述}
+
+DeepTrace数据集由两部分组成：查询集和视频库。
+
+\textbf{查询集}包含20,000个查询视频，所有视频均经过各种多媒体篡改处理。每个查询视频的时长在5至20秒之间，符合真实世界深度伪造视频通常较短的特点。
+
+\textbf{视频库}包含5,000个从YouTube收集的完整原始视频，总时长超过3,000小时，大多数视频时长在30至60分钟之间。视频库中的原始视频保持其原始形式，未经任何修改或编辑，作为伪造查询视频的确切来源。
+
+该任务的目标是为每个查询视频检索视频库中的源视频，并精确定位原始片段。
+
+\subsection{数据集构建流程}
+
+DeepTrace数据集的构建基于IDForge数据集的代码库\cite{xu2024identity}。IDForge是一个大规模深度伪造数据集，包含超过169,000个通过多模态技术生成的伪造视频。然而，与大多数现有深度伪造数据集类似，IDForge缺乏详细的源数据元信息，特别是与原始完整视频相对应的精确时间戳。因此，本研究重新执行了IDForge的数据生成流程，以明确标注相对于原始源视频的对应时间戳。这一关键步骤使得本数据集能够支持片段级溯源任务的评估。
+
+\textbf{视频库构建}。对于视频库，本研究最初使用了IDForge中的500个完整源视频。为模拟真实世界场景的规模和复杂性，本研究通过添加4,500个额外视频显著扩展了视频库，这些视频展示了相同身份的人物在视觉相似环境中的场景。具体而言，本研究采用基于Google Images API的逆向图像搜索策略，基于随机采样的视频帧进行检索，随后进行人工筛选。这一严格的流程旨在捕捉名人在相似环境中自然重复出现的情况——例如同一电视节目的多次出演，或外交官员在同一场地的不同发言。本研究特意纳入这些视觉相似但实际不同的"困难负样本"视频，以挑战模型准确区分特定事件的能力。
+
+\textbf{伪造视频生成}。查询集中的所有伪造视频都涉及多媒体篡改，特别是在视频模态上。对于视频组件，使用三种换脸技术：InsightFace\cite{insightface,roop}、SimSwap\cite{simswap}和InfoSwap\cite{infoswap}。此外，还采用Wav2Lip进行唇形同步\cite{wav2lip}。对于音频组件，伪造使用TorToiSe\cite{tortoise}、RVC\cite{RVC}以及音频混洗技术生成。此外，所有伪造文本使用大型语言模型\cite{brown2020language}和文本混洗方法产生。
+
+\textbf{数据增强}。为增强对常见社交媒体失真的泛化能力，伪造视频经过多种随机扰动处理。具体而言，本研究采用空间变换（如裁剪和旋转）、有损压缩、色彩偏移和时间速度变化来模拟实际的视频分享环境。
+
+特别地，裁剪是一种非常常见的操作，用于将观看者的注意力集中在人物主体上，同时去除冗余的背景信息。在视频裁剪增强流程中，确保人物不被意外裁剪掉至关重要。因此，本研究首先使用人体检测模型\cite{damoyolo}识别视频中人物的位置。这一步骤确保了裁剪区域仅包含与人物无关的背景部分。裁剪比例根据帧内人物的相对大小在25\%至75\%之间随机设置。图\ref{fig:crop_example}展示了基于人脸感知的图像裁剪算法在不同裁剪程度下的效果示例。所有查询视频都使用上述一种或多种变换进行随机后处理，以确保方法对实际应用中可能出现的各种视频修改具有鲁棒性和适应性。
+
+\begin{figure*}[ht]
+    \centering
+    \includegraphics[width=1.0\textwidth]{../images/crop_example.pdf}
+    \caption{基于人脸感知的图像裁剪算法示例。从左至右依次展示原始图像以及裁剪程度为0.25、0.5、0.75和0.9时的裁剪结果，分别移除25\%、50\%、75\%和90\%的原始区域。所有裁剪操作均以检测到的人脸为中心进行。}
+    \label{fig:crop_example}
+\end{figure*}
+
+最终，本研究构建了一个完整的伪造视频定位数据集，包含5,000个视频库视频和20,000个经后处理的伪造查询视频。这些伪造查询视频通过篡改视频库中500个视频的原始片段生成。伪造视频按80\%/10\%/10\%的比例划分为训练集、验证集和测试集，即划分后训练/验证/测试集的正样本对数量分别为16,000/2,000/2,000。
+
+\subsection{数据集统计特性}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.75\textwidth]{../images/dataset_statistics.pdf}
+    \caption{DeepTrace数据集统计特性。(a) 视频库中原始视频时长分布，展示长视频形式的真实内容；(b) 查询视频时长分布，表示短视频形式的伪造片段；(c) 查询与源视频时长比例分布，表明大多数伪造片段仅占源视频的极小部分；(d) 四种深度伪造生成技术的分布比例。}
+    \label{fig:dataset_statistics}
+\end{figure}
+
+DeepTrace数据集的主要统计特性如图\ref{fig:dataset_statistics}所示：
+
+\textbf{视频时长分布}。与用户生成内容（UGC）或专业生成内容（PGC）视频不同，真实世界的深度伪造视频通常时长较短，以降低被检测的可能性，同时仍能实现对关键信息的篡改。因此，数据集中所有深度伪造视频的时长被限制在5至20秒的范围内。这种视频时长分布确保了数据集为评估提供了多样且具有代表性的样本。此外，通过纳入具有代表性的伪造方法，数据集能够全面评估该任务的鲁棒性和有效性。
+
+\textbf{源视频特性}。用于创建深度伪造的视频主要来源于名人演讲、访谈和公开发言，因此时长相对较长。视频库总时长超过3,000小时，大多数视频约50分钟，最长超过10小时，平均时长为35分钟。分辨率范围从240P到720P。
+
+\textbf{查询与源视频比例}。查询视频与源视频的时长比例通常小于1\%，这增加了片段级溯源的挑战，同时也反映了真实世界场景的特点。
+
+\section{评估基准设计}
+
+为科学地评估不同算法方案的性能优劣，本章建立了一套完整的评估基准，作为后续实验研究的衡量尺度与对比基础。
+
+\subsection{评估流程}
+
+整个评估流程分为四个关键部分：帧提取、特征提取、视频级溯源和片段级溯源，如图\ref{fig:deeptrace_benchmark}所示。
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=1.0\textwidth]{../images/deeptrace_benchmark.png}
+    \caption{片段级深度伪造视频源溯源评估流程。左侧、中间和右侧分别展示帧提取与特征计算、视频级溯源和片段级溯源的处理过程。}
+    \label{fig:deeptrace_benchmark}
+\end{figure*}
+
+\textbf{帧提取}。提取关键帧以构建用于视频级溯源的向量数据库，从而降低计算成本。同时，对视频帧进行均匀采样，用于后续的片段级溯源。具体实现中，使用视频的I帧作为关键帧。I帧是不依赖其他帧进行重构的完整图像，这种方法无需额外的计算开销，简单且便捷。
+
+\textbf{特征提取}。本研究采用多种图像描述符和视频描述符进行评估。图像描述符包括：
+\begin{itemize}
+    \item \textbf{ISC21}\cite{ISC21}：在Facebook AI图像相似性挑战赛中取得最佳性能，利用自监督对比学习和各种数据增强方法；
+    \item \textbf{SSCD}\cite{SSCD}：使用自监督对比学习以及强差分熵正则化来创建图像拷贝检测指纹，展现出优越的性能；
+    \item \textbf{DINOv3}\cite{simeoni2025dinov3}：通用视觉基础模型，在广泛的设置中优于专业的最先进方法，无需微调即可应用于多种下游任务；
+    \item \textbf{RTR}\cite{lu2024self}：通过引入区域令牌和非对称训练策略增强特征表示，使Vision Transformer能够有效捕获局部画中画区域，同时保留全局上下文。
+\end{itemize}
+
+视频描述符采用\textbf{I3D}\cite{I3D}，该模型包含光流分支，常应用于动作检索任务。上述特征描述符中，ISC21、SSCD和RTR广泛用于拷贝检测任务；DINOv3包含丰富的语义特征，适用于图像分割等下游任务。本研究仔细选择这些特征以探索哪种类型的特征最适合该任务设置。各特征描述符的详细信息如表\ref{tab:descriptors}所示。
+
+\begin{table}[!htbp]
+\caption{各图像/视频特征描述符的详细信息。}
+\label{tab:descriptors}
+\centering
+\setlength{\tabcolsep}{1mm}
+\begin{tabular}{llll}
+\toprule
+Feature & Backbone & Dim & Training Dataset \\
+\midrule
+ISC21 & EfficientNetV2 & 256 & DISC2021 \\
+DINOv3 & Transformer & 768 & LVD-1689M \\
+SSCD & ResNet50 & 512 & DISC2021 \\
+RTR & Transformer & 768 & DISC2021 \\
+I3D & Inception-V1 & 1024 & Kinetics 400 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{视频级溯源}。使用由关键帧特征组成的向量数据库进行视频级溯源。查询片段的关键帧用于从数据库检索潜在源视频列表，然后用于后续的片段级溯源。
+
+\textbf{片段级溯源}。通过视频级溯源获得潜在源视频列表后，使用查询深度伪造视频和源视频的帧特征序列作为输入来定位源片段。理想情况下，此步骤的输出是精确的时间对应关系，指示查询视频中每个片段在源视频中的确切位置和时间范围。
+
+\subsection{片段级溯源方法}
+
+由于视频拷贝检测方法可应用于此任务，本研究测试了多种方法的性能，包括四种常用的机器学习方法和两种深度学习方法：
+
+\begin{itemize}
+    \item \textbf{霍夫投票（HV）}\cite{HV}。通过一维霍夫变换确定时间偏移，然后进一步估计匹配帧之间的空间变换，最后计算并聚合以获得最终结果。该方法采用全局投票机制，直接投票选择具有最大累积相似度的对角线片段。
+    \item  \textbf{动态规划（DP）}\cite{DP}。使用动态规划和对角线模式匹配高效匹配视频片段。该方法基于严格的对角线假设，在相似度矩阵中寻找最优路径。
+    \item \textbf{时间网络（TN）}\cite{TN}。通过将视频片段对齐问题转化为网络流问题来检测和匹配视频片段。该方法首先对特征相似度矩阵应用Top-K过滤机制，选择K个最相似的点，然后将其转换为图以计算最优路径。
+    \item \textbf{动态时间规整（DTW）}\cite{DTW}。通过允许沿时间轴的非线性拉伸来寻找两个序列之间的最优匹配，从而实现时间序列数据中模式的检测和比较。
+    \item \textbf{SPD}\cite{jiang2021learning}。将从查询-参考视频对计算的相似度矩阵转换为目标检测问题，并使用YOLO进行检测。
+    \item \textbf{TransVCL}\cite{he2023transvcl}。一种端到端的视频拷贝定位网络，利用基于Transformer的架构，通过自注意力和交叉注意力增强帧级特征并捕获长程时间依赖。该方法用可学习的相似度矩阵替代传统的手工相似度度量，使模型能够直接从增强的特征表示中优化对齐和定位复制片段。
+\end{itemize}
+
+\subsection{评估指标}
+
+\textbf{视频级溯源指标}。采用Top-N召回率（Recall@Top-N）作为评估指标。传统指标如准确率和平均精度（AP）不适用于本任务，因为每个查询只有一个正确结果，且更关注正确答案是否包含在指定范围内，而非排名。
+
+\textbf{片段级溯源指标}。采用帧精确率（Frame Precision）和帧召回率（Frame Recall）来解决片段级指标在复杂场景下定位片段的局限性。进一步使用F1分数将帧精确率和帧召回率结合，提供平衡且全面的评估。此外，使用错误拒绝率（False Rejection Rate, FRR）和错误接受率（False Acceptance Rate, FAR）评估片段溯源方法在视频级别的准确性，并报告平均错误率（Average Error Rate, AER）作为总体错误的单一指标。
+
+\textbf{帧对齐比例指标}。考虑到视频场景的高度重复性，特征区分细粒度场景差异的能力显著影响片段级溯源的性能。为此，本研究设计了一种新指标——Top-N帧对齐比例（Frame Alignment Ratio at Top-N, FRAR@Top-N），用于评估查询视频与参考视频之间的帧级对齐质量。
+
+给定查询视频和参考视频的帧特征序列$Q = \{q_1, q_2, ..., q_m\}$和$R = \{r_1, r_2, ..., r_n\}$，首先计算相似度矩阵$S$，其中$S_{ij} = sim(q_i, r_j)$。对于每个查询帧，识别Top-N个最相似的参考帧。FRAR@Top-N定义为这些Top-N帧落在参考视频真值片段内的比例，在所有查询帧上取平均：
+\begin{equation}
+\text{FRAR@Top-N} = \frac{\sum_{i=1}^m |\{(v, j) \in TopN(S_i) : j \in G\}|}{mN}
+\end{equation}
+其中，$TopN(S_i)$是第$i$个查询帧的前$N$个（值，索引）对集合，$G$是真值片段中的帧索引集合。
+
+该指标在高场景重复的场景中具有特殊价值。在参考视频包含多个相似或相同场景的情况下，该指标能够有效指示描述符是否仍能识别最相关的场景片段。
+
+\section{现有方法的基准评估与分析}
+
+本节通过对现有可适用方法的系统评估，分析各类方法在片段级深度伪造溯源任务上的表现，揭示当前技术的能力边界与局限性。
+
+\subsection{实验设置}
+
+\textbf{数据集设置}。测试集中正负样本比例为1:4，添加8,000个负样本以全面评估模型。为确保公平比较，片段级溯源的候选对选择在所有实验中统一基于ISC21特征描述符的检索结果。由于真值源视频在Top-5候选中被高概率检索到，因此将候选池大小设为5。4个负样本被明确选择为ISC21产生的相似度分数最高的非真值视频，这些"困难负样本"通常与查询共享高场景相似性，确保了严格的评估。
+
+\textbf{特征提取}。所有图像描述符均采用现有预训练模型。对于DINOv3特征，为防止其过度偏向高级语义，采用将[CLS]令牌与patch令牌拼接，随后进行GeM池化和白化操作的方法。
+
+\textbf{视频级溯源}。由于I3D不适合从单个关键帧提取特征，最终使用其余四种特征进行实验，以Faiss作为向量数据库。
+
+\textbf{片段级溯源}。对于机器学习方法（HV、TN、DP、DTW），在训练+验证集上使用网格搜索找到最优超参数，并在测试集上测试性能。对于SPD和TransVCL，采用训练和验证集进行训练/调优和验证，获得最佳模型后在测试集上进行测试。为适应数据集的短视频设置，对SPD和TransVCL应用滑动窗口参数，窗口大小设为128。
+
+\subsection{视频级溯源结果}
+
+视频级溯源的评估结果如表\ref{tab:video_tracing_result}所示。结果表明，所有特征描述符均能有效应对视频变换和伪造，成功识别几乎所有正确源视频在Top-5候选内。
+
+\begin{table}[!htbp]
+\centering
+\caption{基于Recall@Top-N的视频级溯源结果（\%）。}
+\label{tab:video_tracing_result}
+\small
+\begin{tabular}{ccccc}
+\toprule
+\textbf{Recall@Top-N (\%)} & \textbf{DINOv3} & \textbf{ISC21} & \textbf{SSCD} & \textbf{RTR} \\
+\midrule
+N=1 & 77.80 & 81.40 & \textbf{84.70} & 82.10 \\
+N=3 & 88.10 & 91.40 & \textbf{92.20} & 91.50 \\
+N=5 & 94.40 & 97.60 & \textbf{98.10} & 97.50 \\
+N=10 & 97.60 & 99.40 & \textbf{99.60} & 99.40 \\
+N=20 & 99.10 & 99.60 & \textbf{99.70} & 99.60 \\
+N=50 & 99.10 & 99.60 & \textbf{99.80} & 99.70 \\
+\bottomrule
+\end{tabular}
+\end{table}具体而言，SSCD特征在Recall@Top-1达到84.70\%，在Recall@Top-5达到98.10\%，表现最优。DINOv3尽管是最面向语义的特征，在Recall@Top-5也达到94.40\%。
+
+这一结果表明，视频级溯源是一个相对可解决的子任务。主要瓶颈不在于视频级检索，而在于片段级溯源所需的复杂性和精度。
+
+\subsection{片段级溯源结果}
+
+片段级溯源的实验结果如表\ref{tab:segment_level_result}、表\ref{tab:video_level_result}和表\ref{tab:frar_topn}所示，揭示了以下重要发现。
+
+\begin{table*}[t]
+\centering
+\caption{正样本对上的片段级溯源结果（Precision、Recall和F1 Score，单位\%）。}
+\label{tab:segment_level_result}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{c ccc ccc ccc ccc ccc}
+\toprule
+\multirow{2}{*}{\textbf{Method}} & \multicolumn{3}{c}{\textbf{DINOv3}} & \multicolumn{3}{c}{\textbf{ISC21}} & \multicolumn{3}{c}{\textbf{SSCD}} & \multicolumn{3}{c}{\textbf{RTR}} & \multicolumn{3}{c}{\textbf{I3D}} \\
+\cmidrule(lr){2-4} \cmidrule(lr){5-7} \cmidrule(lr){8-10} \cmidrule(lr){11-13} \cmidrule(lr){14-16}
+ & Prec & Recall & F1 & Prec & Recall & F1 & Prec & Recall & F1 & Prec & Recall & F1 & Prec & Recall & F1 \\
+\midrule
+HV & 42.15 & \textbf{37.20} & \textbf{39.52} & 46.59 & 41.84 & 44.09 & 53.38 & \textbf{53.63} & \textbf{53.50} & 49.82 & 48.15 & 48.97 & \textbf{1.15} & \textbf{1.72} & \textbf{1.38} \\
+TN & 40.80 & 26.65 & 32.24 & 44.74 & 31.09 & 36.69 & 50.03 & 25.00 & 33.34 & 47.55 & 28.12 & 35.34 & 0.26 & 0.32 & 0.29 \\
+DP & \textbf{64.92} & 4.55 & 8.50 & \textbf{68.63} & 7.08 & 12.84 & \textbf{70.19} & 8.23 & 14.74 & \textbf{69.41} & 7.75 & 13.94 & 1.08 & 0.31 & 0.48 \\
+DTW & 48.15 & 5.05 & 9.14 & 51.48 & 7.79 & 13.53 & 52.29 & 9.20 & 15.64 & 51.92 & 8.64 & 14.81 & 0.49 & 0.27 & 0.35 \\
+SPD & 40.50 & 35.80 & 38.01 & 44.32 & 40.04 & 42.07 & 52.09 & 51.56 & 51.82 & 48.25 & 46.33 & 47.27 & 0.82 & 1.60 & 1.09 \\
+TransVCL & 39.25 & 33.30 & 36.03 & 47.45 & \textbf{42.00} & \textbf{44.56} & 45.82 & 44.25 & 45.02 & 51.15 & \textbf{48.62} & \textbf{49.85} & 0.44 & 0.47 & 0.46 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table*}
+
+\textbf{溯源方法的比较}。如表\ref{tab:segment_level_result}所示，DP和DTW在所有特征上表现较差，主要因为在高度重复和相似的视频片段场景中，这些方法在路径规划上面临挑战，导致决策边界模糊和路径识别错误。TN算法虽优于上述两种方法，但效果仍不理想，因为其依赖于Top-K过滤机制，需要正确溯源片段的相似度明显高于其他部分。相比之下，HV算法在正样本定位精度和正负样本区分能力上取得了出色的结果。这归功于其全局投票机制和严格的对角线假设。在DeepTrace场景中，时间变换通常不会太剧烈以保持可信度，因此严格的对角线假设不会显著降低性能。全局投票机制绕过了在相似度图中隔离清晰对角线带的需要，直接投票选择具有最大累积相似度的对角线片段。深度学习方法（SPD和TransVCL）在正样本定位上表现强劲，但在区分正负样本方面略逊于HV，尽管差距较小。特别是TransVCL采用的帧间注意力机制未能在此场景中产生显著的性能提升，这可能是因为主体运动的微小变化使得时间建模效果有限。
+
+\begin{table}[t]
+\caption{FRR、FAR和AER指标性能对比（\%）。由于I3D在所有方法上的错误率均超过80\%，此处省略。}
+\label{tab:video_level_result}
+\centering
+\setlength{\tabcolsep}{1.5mm}
+\footnotesize
+\renewcommand{\arraystretch}{0.9}
+\begin{tabular}{clccc}
+\toprule
+Feature & Method & FRR $\downarrow$ & FAR $\downarrow$ & AER $\downarrow$ \\
+\midrule
+\multirow{6}{*}{DINOv3}
+ & \bfseries HV & 20.02 & \bfseries 10.92 & \bfseries 15.47 \\
+ & TN & 28.86 & 34.74 & 31.80 \\
+ & DP & \bfseries 19.54 & 31.94 & 25.74 \\
+ & DTW & 35.55 & 40.26 & 37.91 \\
+ & SPD & 24.18 & 15.58 & 19.88 \\
+ & TransVCL & 22.31 & 13.51 & 17.91 \\
+\midrule
+\multirow{6}{*}{ISC21}
+ & \bfseries HV & 15.92 & \bfseries 11.86 & \bfseries 13.89 \\
+ & TN & \bfseries 15.21 & 35.09 & 25.15 \\
+ & DP & 27.43 & 34.85 & 31.14 \\
+ & DTW & 25.06 & 42.30 & 33.68 \\
+ & SPD & 20.71 & 16.51 & 18.61 \\
+ & TransVCL & 18.41 & 14.33 & 16.37 \\
+\midrule
+\multirow{6}{*}{SSCD}
+ & \bfseries HV & \bfseries 13.87 & \bfseries 13.43 & \bfseries 13.65 \\
+ & TN & 23.00 & 33.58 & 28.29 \\
+ & DP & 20.53 & 32.76 & 26.64 \\
+ & DTW & 22.65 & 41.41 & 32.03 \\
+ & SPD & 18.85 & 17.07 & 17.96 \\
+ & TransVCL & 16.67 & 14.69 & 15.68 \\
+\midrule
+\multirow{6}{*}{RTR}
+ & \bfseries HV & \bfseries 16.68 & \bfseries 15.97 & \bfseries 16.33 \\
+ & TN & 24.20 & 32.89 & 28.55 \\
+ & DP & 21.71 & 33.56 & 27.64 \\
+ & DTW & 22.95 & 38.52 & 30.74 \\
+ & SPD & 21.36 & 20.69 & 21.03 \\
+ & TransVCL & 19.10 & 17.70 & 18.40 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{正负样本区分能力}。表\ref{tab:video_level_result}展示了各方法在区分正负样本对时的错误率指标。HV算法在FAR和AER上均取得最优结果，表明其全局投票机制在抑制误匹配方面具有显著优势。深度学习方法虽然FRR较低，但FAR相对较高，说明它们在避免将负样本误判为正样本方面仍有改进空间。
+
+\begin{table}[t]
+\centering
+\caption{不同特征描述符的FRAR@Top-N性能对比（\%）。}
+\label{tab:frar_topn}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{cccccc}
+\toprule
+\multirow{2}{*}{\textbf{Feature}} & \multicolumn{5}{c}{\textbf{FRAR@Top-N (\%) $\uparrow$}} \\
+\cmidrule(lr){2-6}
+& 3 & 10 & 20 & 50 & 100 \\
+\midrule
+DINOv3 & 34.40 & 30.01 & 15.11 & 9.41 & 6.03 \\
+ISC21 & 38.89 & 34.62 & 17.53 & 10.02 & 6.55 \\
+SSCD & \textbf{55.82} & \textbf{46.54} & \textbf{22.61} & \textbf{12.28} & \textbf{7.91} \\
+RTR & 50.73 & 41.68 & 17.85 & 10.14 & 7.32 \\
+I3D & 0.86 & 1.18 & 1.83 & 2.11 & 2.45 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{特征描述符的影响}。如表\ref{tab:frar_topn}所示，I3D描述符在所有评估方法中表现极差（F1分数低于2\%），这证明视频光流特征在此类低运动场景中几乎无效。DINOv3的表现与视频级溯源部分观察到的趋势一致，持续弱于其他三种特征。RTR和SSCD相比ISC21展示了对深度伪造场景更好的适应性。这些特征的性能趋势与FRAR@Top-N指标呈现强相关性，表明主要瓶颈是重复场景中的特征混淆，具体源于对人像非面部区域细粒度姿态细节的敏感度不足。
+
+\subsection{裁剪对性能的影响}
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=1.0\textwidth]{../images/crop_impact_line.pdf}
+    \caption{裁剪程度对时间定位性能的影响。(a)-(c) 分别展示HV、SPD和TransVCL方法在不同裁剪程度下使用DINOv3、ISC21、SSCD和RTR特征的F1分数变化趋势，每条线代表不同的特征提取器。(d) 使用RTR特征对比原始视频与各种深度伪造方法之间的F1分数差异。}
+    \label{fig:crop_impact}
+\end{figure*}
+
+实验观察到，裁剪对性能的影响显著大于其他增强操作，如图\ref{fig:crop_impact}(a)-(c)所示，这与其作为此场景中最普遍操作之一的地位相符。许多短深度伪造视频使用背景裁剪将注意力集中在说话主体上。
+
+分析表明，随着裁剪程度的增加，性能下降，但影响程度因特征描述符而异。值得注意的是，ISC21相比其他三种特征对裁剪的鲁棒性较低。虽然裁剪减少了背景干扰并迫使描述符专注于主要主体，但同时也放大了面部伪造伪影的可见性。考虑到真实世界的裁剪比例通常保持在75\%以内，所构建的数据集采用此范围内的随机裁剪以保持实际相关性。
+
+\subsection{不同深度伪造方法的影响}
+
+不同深度伪造生成方法对检测性能的影响分析显示，虽然所有篡改类型都会引入干扰，但严重程度差异显著。具体而言，仅修改唇形同步的Wav2Lip与原始基线相比导致F1分数的边际下降。相比之下，换脸方法导致更大幅度的性能下降。
+
+此外，不同换脸技术之间也存在性能差异。尽管共享相同的目标，每种方法引入的特定算法伪影和融合痕迹对特征区分能力的影响程度不同。这表明当前的特征表示并非最优，更鲁棒的方法应该结合非面部区域的细粒度特征，避免过度关注面部区域。
+
+\subsection{现有方法的局限性总结}
+
+综合上述评估结果，可以明确当前片段级深度伪造溯源领域存在的核心问题：
+
+\textbf{特征表示的根本性不足}。尽管视频级溯源是一个使用现有描述符基本可解决的任务，但片段级溯源所需的复杂性和精度远超当前特征表示的能力边界。现有描述符在高视觉重复、低运动内容和细微伪造伪影的场景中难以保持区分能力，导致实验中观察到的特征混淆问题。这一根本瓶颈源于现有特征描述符并非为深度伪造溯源场景专门设计，它们对人像非面部区域的细粒度姿态细节缺乏敏感度。
+
+\textbf{传统溯源算法的适应性问题}。基于路径规划的传统方法（如DP、DTW、TN）在高度相似场景中表现不佳。当特征相似度矩阵中出现大量高相似度区域时，这些算法面临决策边界模糊的问题，难以准确识别正确的匹配路径。虽然HV算法凭借其全局投票机制展现出相对优势，但其性能仍受限于底层特征的区分能力。
+
+\textbf{深度学习方法的局限}。尽管深度学习方法（SPD、TransVCL）在正样本定位上表现较好，但它们未能有效解决深度伪造溯源的核心挑战。特别是基于注意力机制的时间建模在低运动场景中收效甚微，表明需要针对该任务特性设计专门的方法。
+
+上述发现表明，克服特征表示的局限性是提升片段级深度伪造溯源性能的关键方向。下一代溯源框架必须优先开发专门的特征提取或增强机制，以明确捕获细粒度的非面部姿态细节，从而增强对深度伪造溯源场景的适应性。
+
+\section{面向深度伪造溯源的特征增强方法}
+
+基于上述分析，现有特征描述符在深度伪造溯源场景中的核心局限在于：它们并非针对该特定任务设计，因而对人像非面部区域的细粒度姿态细节缺乏敏感度，同时对深度伪造引入的面部篡改过于敏感。为解决这一问题，本节提出一种面向深度伪造溯源的特征增强方法，通过在领域相关数据上对预训练视觉模型进行特征适配和微调，使其更好地适应深度伪造溯源任务的独特需求。
+
+\subsection{方法概述}
+
+本研究的核心思路是利用DINOv3预训练模型丰富的语义特征，通过轻量级的适配层进行特征提炼，并结合多粒度正样本构建特征不变性，最终通过对比学习实现精准的视频片段检索。
+
+DINOv3是当前最先进的自监督视觉预训练模型之一，其特征表示在多种下游任务中展现出卓越的泛化能力\cite{oquab2023dinov2}。选择DINOv3而非直接微调SSCD等现有拷贝检测模型，主要基于两点考虑：一方面，DINOv3采用ViT架构，能够输出丰富的Patch级特征，便于进行多层次的特征聚合；另一方面，DINOv3本身已经包含了非常丰富的语义信息，无需从头训练整个网络，只需设计轻量级的适配模块即可将特征投影到任务所需的空间。
+
+基于轻量化和高效率的设计原则，本方法冻结预训练主干网络的全部参数，仅训练少量适配层。整体框架包含四个核心组件：首先从DINOv3中提取多层Patch Tokens进行聚合，然后通过线性层进行特征筛选和降维，接着使用广义平均池化实现空间聚合，最后通过浅层MLP投影头映射到对比学习的嵌入空间。这种设计在保持计算开销最小化的同时，充分利用预训练模型已有的丰富语义信息。
+
+\subsection{网络架构设计}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{../images/trace_dino_model.png}
+    \caption{TraceDINO特征增强方法的整体架构。输入的锚点样本（深度伪造帧）、正样本和负样本首先通过冻结的DINOv3 ViT主干网络提取多层Patch Tokens；随后经过可训练的特征适配模块，依次进行多层特征拼接、线性融合降维、GeM池化和MLP投影；最终在对比学习框架下通过监督对比损失进行训练，使正样本对在嵌入空间中靠近、负样本对远离。}
+    \label{fig:tracedino_architecture}
+\end{figure}
+
+如图\ref{fig:tracedino_architecture}所示，本研究采用预训练的DINOv3 Vision Transformer作为特征提取主干网络，并冻结其全部参数。给定输入图像$\mathbf{x}\in\mathbb{R}^{H\times W\times 3}$和patch尺寸$p$，编码器将图像划分为$N=(H/p)\times(W/p)$个patch，每个patch被线性投影为$d$维的token表示，得到初始patch token矩阵$\mathbf{Z}^{(0)}\in\mathbb{R}^{N\times d}$。设DINOv3主干包含$L$层Transformer block，记第$\ell$层block为$\mathcal{B}_\ell$，则token序列的更新过程为：
+\begin{equation}
+    \mathbf{Z}^{(\ell)}=\mathcal{B}_\ell\!\left(\mathbf{Z}^{(\ell-1)}\right),\qquad \ell=1,\dots,L.
+\end{equation}
+
+不同于仅使用最后一层CLS Token的常规做法，本方法提取多个中间层的Patch Token进行聚合，以同时获取低层次的纹理边缘信息和高层次的语义结构信息。定义待提取的层集合为：
+\begin{equation}
+    \mathcal{L}=\{\ell_1,\ell_2,\dots,\ell_K\}\subseteq\{1,\dots,L\}.
+\end{equation}
+对于每个$\ell_k\in\mathcal{L}$，仅提取patch token $\mathbf{Z}_{\mathrm{p}}^{(\ell_k)}\in\mathbb{R}^{N\times d}$，丢弃CLS token及register token等非patch token。随后将各层特征沿通道维度拼接：
+\begin{equation}
+    \mathbf{Z}_{\mathrm{cat}} = \mathrm{Concat}\left(\mathbf{Z}_{\mathrm{p}}^{(\ell_1)},\mathbf{Z}_{\mathrm{p}}^{(\ell_2)},\dots,\mathbf{Z}_{\mathrm{p}}^{(\ell_K)}\right)\in\mathbb{R}^{N\times Kd}.
+\end{equation}
+之所以采用多层特征聚合，是因为深度伪造溯源任务的特征需求较为特殊——既需要低层次特征捕捉纹理、边缘等局部细节以区分细粒度姿态差异，又需要高层次语义特征理解场景结构以应对背景变化。单独使用最后一层的特征难以满足这种多层次需求。
+
+多层特征拼接后，通过一个线性变换进行融合和降维：
+\begin{equation}
+    \mathbf{Z}_{\mathrm{fused}} = \mathbf{Z}_{\mathrm{cat}} \mathbf{W} + \mathbf{b},
+\end{equation}
+其中$\mathbf{W} \in \mathbb{R}^{Kd \times d'}$为可学习的权重矩阵，$d'$为融合后的特征维度。该线性层作为"特征筛选器"，学习为不同层、不同通道的特征分配权重，自动识别哪些特征对深度伪造溯源最为关键。
+
+随后采用广义平均池化（Generalized Mean Pooling, GeM）将patch级特征聚合为全局图像表示：
+\begin{equation}
+    \mathbf{f}_{\mathrm{GeM}} = \left( \frac{1}{N} \sum_{i=1}^{N} \mathbf{z}_i^{p_{\mathrm{gem}}} \right)^{1/p_{\mathrm{gem}}},
+\end{equation}
+其中$\mathbf{z}_i\in\mathbb{R}^{d'}$为第$i$个patch的融合特征，$p_{\mathrm{gem}}$为池化指数参数。相比平均池化，GeM更关注高响应区域（通常对应人物主体），同时将空间特征压缩为全局向量使得模型不再依赖绝对位置信息，从而增强对裁剪攻击的鲁棒性。
+
+最后通过一个两层MLP投影头将特征映射到$d_{\mathrm{emb}}$维的嵌入空间：
+\begin{equation}
+    \mathbf{z} = \mathrm{Normalize}\left( \mathbf{W}_2 \cdot \sigma(\mathbf{W}_1 \cdot \mathbf{f}_{\mathrm{GeM}} + \mathbf{b}_1) + \mathbf{b}_2 \right),
+\end{equation}
+其中$\sigma(\cdot)$为GELU激活函数。输出特征经L2归一化后位于单位超球面上，使用余弦相似度进行比较。这一设计借鉴了SimCLR等对比学习方法的成功经验\cite{chen2020simclr}。
+
+\subsection{训练数据构建}
+
+本研究基于DeepTrace数据集构建用于特征微调的图像训练集，采用"1个锚点 vs $N_p$个正样本 vs $N_n$个负样本"的训练组合形式。
+
+\textbf{锚点样本}。锚点样本来源于DeepTrace训练集中的16,000个深度伪造查询视频。由于查询视频时长较短（5至20秒），相邻帧之间的视觉差异有限，过多采样反而会引入冗余。因此，对每个视频均匀采样2帧作为锚点图像，最终得到32,000个锚点。
+
+\textbf{正样本构建}。正样本的构建旨在强迫模型学习不同维度的不变性。对于每个锚点帧，首先从对应的源视频片段中提取时间对齐的原始帧，然后通过以下图像处理操作构建3类正样本：
+\begin{enumerate}
+    \item \textbf{原始源帧}：直接使用时间对齐的源帧，建模深度伪造溯源中的查询-源匹配关系；
+    \item \textbf{裁剪变体}：使用人体检测模型（DAMO-YOLO\cite{damoyolo}）定位源帧中的人物主体，以检测框为中心进行随机比例裁剪，增强模型的尺度不变性；
+    \item \textbf{模糊变体}：使用人脸检测模型（RetinaFace\cite{serengil_retinaface_2024}）定位人脸区域并施加强高斯模糊处理，削弱模型对面部特征的依赖——这一设计的核心逻辑是：在深度伪造场景中人脸必然被篡改，因此应当强迫模型通过姿态、衣着、背景纹理等非面部特征来锁定源视频。
+\end{enumerate}
+此外，为模拟社交媒体传播中常见的有损压缩，上述所有正样本均经过随机质量因子的JPEG压缩作为统一的后处理步骤，以增强模型对压缩伪影的鲁棒性。综上，每个锚点对应3个正样本。
+
+\textbf{负样本设计}。负样本的设计对于对比学习至关重要，本研究采用困难负样本与批内负样本相结合的策略。困难负样本来源于同一源视频的不同时间段。由于演讲类视频具有"背景不变、姿态微变"的特性，这些样本与锚点在高级语义上高度相似，仅在姿态、表情等细粒度特征上存在差异，天然构成高质量的训练信号。采样时需遵循"安全半径"约束：设锚点帧对应的源视频时间戳为$t_a$，源视频总时长为$T$，安全半径为$R_s$，则困难负样本的有效采样区间定义为：
+\begin{equation}
+    \mathcal{T}_{\text{neg}} = \{t \mid t \in [0, T] \land |t - t_a| > R_s\}.
+\end{equation}
+本研究设置$R_s = 15$秒，在有效区间$\mathcal{T}_{\text{neg}}$内均匀采样3个时间点，提取对应帧作为困难负样本，使困难负样本与正样本的比例保持1:1。之所以设置安全半径，是因为锚点帧周围的相邻帧姿态变化极其微小，将其作为负样本反而会导致模型学习到错误的特征或难以收敛。
+
+普通负样本则采用批内负样本（in-batch negatives）策略：同一训练批次中其他样本组的锚点、正样本和困难负样本均可作为当前样本的普通负样本。这一策略无需额外存储，在训练时动态计算，是SimCLR\cite{chen2020simclr}、MoCo\cite{he2020momentum}、SupCon\cite{khosla2020supervised}等主流对比学习方法的标准做法。
+
+\textbf{数据集统计}。最终构建的训练集包含32,000个锚点图像，每个锚点对应3个正样本和3个困难负样本，显式存储的图像总数约为224,000张。普通负样本通过批内采样在训练时动态获取，不占用额外存储空间。
+
+\subsection{损失函数设计}
+
+由于每个锚点样本对应多个正样本，本研究采用监督对比损失（Supervised Contrastive Loss\cite{khosla2020supervised}）来处理这种"一对多"的关系。设小批量中包含$N$个锚点样本，对于锚点$i$的特征向量$z_i$及其正样本集合$P_i$，损失函数定义为：
+\begin{equation}
+    \mathcal{L}_{\text{SupCon}} = \sum_{i=1}^{N} \frac{-1}{|P_i|} \sum_{z_p \in P_i} \log \frac{\exp(z_i \cdot z_p / \tau)}{\sum_{z_a \in A_i} \exp(z_i \cdot z_a / \tau)}
+\end{equation}
+其中$A_i$为除$z_i$外的所有样本集合，$\tau$为温度参数。该损失在特征空间中将锚点同时拉近所有对应的正样本，并将负样本推远。
+
+为防止特征坍缩，本研究还引入了KoLeo熵正则化损失\cite{sablayrolles2019spreading}：
+\begin{equation}
+    \mathcal{L}_{\text{Entropy}} = -\frac{1}{N} \sum_{i=1}^{N} \log \left( \min_{j \neq i, j \notin P_i} \|z_i - z_j\| \right)
+\end{equation}
+该损失基于Kozachenko-Leonenko差分熵估计器，通过最大化特征向量之间的最近邻距离来强迫所有样本在超球面上均匀分布。SSCD\cite{pizzi2022sscd}的研究表明，该损失在图像拷贝检测的特征训练中能够显著提升检索精度。最终的训练损失为两者的加权组合：
+\begin{equation}
+    \mathcal{L}_{\text{total}} = \mathcal{L}_{\text{SupCon}} + \lambda \cdot \mathcal{L}_{\text{Entropy}}
+\end{equation}
+
+\subsection{训练细节}
+
+训练时保持DINOv3主干网络参数冻结，仅训练特征融合模块和投影头，使用官方预训练权重进行初始化。采用AdamW优化器，初始学习率为$1 \times 3^{-4}$，并采用余弦退火调度使学习率在训练过程中逐渐衰减至$1 \times 10^{-5}$。使用4个A100进行分布式训练，全局批量大小为256。监督对比损失的温度参数$\tau = 0.05$，熵正则化损失的权重系数$\lambda = 30$。共训练50个epoch。在推理阶段，仅需通过训练好的模型提取图像特征，后续的视频级和片段级溯源流程与基准评估中保持一致。
+
+\section{实验结果与分析}
+
+本节评估所提出的特征增强方法在DeepTrace测试集上的性能，并与基准方法进行对比分析。
+
+\subsection{实验设置}
+
+\textbf{模型配置}。本研究采用DINOv3-ViT-B/14作为主干网络，多层特征聚合选取第3、6、9、12层，即层集合$\mathcal{L}=\{3,6,9,12\}$，因此$K=4$，融合后的特征维度$d'=768$，GeM池化指数$p_{\mathrm{gem}}=4$，最终嵌入维度$d_{\mathrm{emb}}=512$。
+
+\textbf{数据集与评估}。实验评估在DeepTrace测试集上进行，包含2,000个正样本对和8,000个负样本对。评估流程与基准评估部分保持一致，采用相同的评估指标和实验设置，以确保公平比较。
+
+将本研究提出的基于DINOv3的特征适配方法记为Ours，与原始DINOv3及其他基准特征描述符进行对比。在片段级溯源算法的选择上，本研究同时采用霍夫投票（HV）和SPD两种方法进行评估。HV在基准评估中展现出最优的综合性能，而SPD能够输出置信度分数，具有更大的灵活性且无需复杂的参数调优。
+
+\subsection{主要实验结果}
+
+\textbf{片段级溯源性能}。特征增强方法与基准方法在片段级溯源指标上的性能对比如表\ref{tab:feature_enhancement_results}所示。实验分别采用HV和SPD作为片段级溯源算法，以全面评估特征的有效性。
+
+\begin{table}[!htbp]
+\centering
+\caption{特征增强方法片段级溯源性能对比（Precision、Recall和F1 Score，单位\%）。}
+\label{tab:feature_enhancement_results}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{l ccc ccc c}
+\toprule
+\multirow{2}{*}{\textbf{Feature}} & \multicolumn{3}{c}{\textbf{HV}} & \multicolumn{3}{c}{\textbf{SPD}} & \multirow{2}{*}{\textbf{FRAR@Top-20}} \\
+\cmidrule(lr){2-4} \cmidrule(lr){5-7}
+& Prec & Recall & F1 & Prec & Recall & F1 & \\
+\midrule
+DINOv3 & 42.15 & 37.20 & 39.52 & 40.50 & 35.80 & 38.01 & 15.11 \\
+ISC21 & 46.59 & 41.84 & 44.09 & 44.32 & 40.04 & 42.07 & 17.53 \\
+RTR & 49.82 & 48.15 & 48.97 & 48.25 & 46.33 & 47.27 & 17.85 \\
+SSCD & 53.38 & 53.63 & 53.50 & 52.09 & 51.56 & 51.82 & 22.61 \\
+\midrule
+\textbf{Ours} & \textbf{62.47} & \textbf{65.18} & \textbf{63.80} & \textbf{60.83} & \textbf{63.25} & \textbf{62.01} & \textbf{29.77} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+从表中可以看出，本方法在所有评估指标上均显著优于各基准方法。无论使用HV还是SPD作为片段级溯源算法，本方法在精确率、召回率和F1分数上均取得了最优结果，且相比表现最好的基准方法SSCD具有明显优势。相比直接使用原始DINOv3特征，本方法的性能提升更为显著，表明通过多层特征聚合、特征适配和领域特定的对比学习训练，能够充分挖掘预训练特征的潜力，使其更好地适应深度伪造溯源任务的需求。
+
+FRAR@Top-3指标同样呈现出一致的改善趋势。该指标直接反映了特征在高重复场景中的细粒度区分能力，本方法相比各基准方法均有明显领先，说明经过特征适配的模型能够更准确地将查询帧对齐到正确的源片段，有效缓解了基准评估中观察到的特征混淆问题。
+
+\textbf{视频级溯源性能}。表\ref{tab:video_level_enhancement}展示了各方法在视频级指标上的性能对比，包括错误拒绝率（FRR）、错误接受率（FAR）和平均错误率（AER）。
+
+\begin{table}[!htbp]
+\centering
+\caption{特征增强方法视频级溯源性能对比（FRR、FAR和AER，单位\%）。}
+\label{tab:video_level_enhancement}
+\small
+\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{l ccc ccc}
+\toprule
+\multirow{2}{*}{\textbf{Feature}} & \multicolumn{3}{c}{\textbf{HV}} & \multicolumn{3}{c}{\textbf{SPD}} \\
+\cmidrule(lr){2-4} \cmidrule(lr){5-7}
+& FRR $\downarrow$ & FAR $\downarrow$ & AER $\downarrow$ & FRR $\downarrow$ & FAR $\downarrow$ & AER $\downarrow$ \\
+\midrule
+DINOv3 & 20.02 & 10.92 & 15.47 & 24.18 & 15.58 & 19.88 \\
+ISC21 & 15.92 & 11.86 & 13.89 & 20.71 & 16.51 & 18.61 \\
+RTR & 16.68 & 15.97 & 16.33 & 21.36 & 20.69 & 21.03 \\
+SSCD & 13.87 & 13.43 & 13.65 & 18.85 & 17.07 & 17.96 \\
+\midrule
+\textbf{Ours} & \textbf{10.53} & \textbf{8.76} & \textbf{9.65} & \textbf{14.21} & \textbf{11.83} & \textbf{13.02} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+结果表明，本方法在正负样本区分能力上同样取得了显著提升。在HV和SPD两种算法下，本方法的FRR、FAR和AER均为最低，表明本方法不仅能够更准确地识别正确的源片段（低FRR），还能有效抑制对负样本的误匹配（低FAR）。这些结果进一步验证了特征增强方法在提升片段级溯源整体性能方面的有效性。
+
+\subsection{裁剪鲁棒性分析}
+
+基准评估中观察到裁剪是影响性能最显著的变换操作之一。为验证本方法对裁剪操作的鲁棒性，本研究对不同裁剪程度下的特征性能进行了详细对比分析，结果如表\ref{tab:crop_robustness}所示。
+
+\begin{table}[!htbp]
+\centering
+\caption{不同裁剪程度下的F1分数对比（使用HV算法，单位\%）。}
+\label{tab:crop_robustness}
+\small
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Feature} & \textbf{0\%} & \textbf{25\%} & \textbf{50\%} & \textbf{75\%} \\
+\midrule
+DINOv3 & 45.12 & 41.83 & 36.27 & 28.65 \\
+ISC21 & 52.36 & 46.21 & 38.94 & 29.43 \\
+RTR & 56.82 & 51.47 & 45.63 & 37.25 \\
+SSCD & 61.25 & 56.38 & 50.14 & 41.82 \\
+\midrule
+\textbf{Ours} & \textbf{70.35} & \textbf{64.92} & \textbf{56.48} & \textbf{45.67} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+从表中可以看出，随着裁剪程度的增加，所有方法的性能均呈下降趋势，但本方法在各裁剪程度下均保持最优。值得注意的是，不同特征描述符对裁剪的敏感程度存在差异：ISC21在高裁剪程度下性能衰减最为剧烈，而SSCD和本方法的衰减曲线相对平缓。这表明本方法对裁剪操作具有较好的鲁棒性，主要得益于训练过程中引入的裁剪正样本以及GeM池化对空间位置不变性的增强。
+
+\section{本章小结}
+
+本章围绕深度伪造视频的片段级溯源问题展开研究，首先定义了片段级溯源任务，并构建了首个专用数据集DeepTrace，该数据集包含大量伪造查询视频和原始视频库，同时提供精确的时间边界标注。在此基础上，设计了完整的评估基准，包括视频级和片段级两个层次的溯源流程，并提出了FRAR@Top-N指标来衡量高重复场景下的特征区分能力。通过对多种特征描述符和溯源算法的系统评估，可以看到现有方法的核心瓶颈在于特征表示层面：当源视频中存在大量视觉相似的片段时，现有描述符难以有效区分细粒度的姿态差异。针对这一问题，本章提出了基于DINOv3的轻量级特征增强方法，通过冻结预训练主干、仅训练少量适配层的方式，结合多层特征聚合和领域特定的对比学习训练策略，使模型能够更好地捕捉非面部区域的细粒度特征。实验结果表明，该方法在保持高效率的同时显著提升了片段级溯源的性能。
