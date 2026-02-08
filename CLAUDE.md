@@ -26,6 +26,7 @@
 
 - 在运行任何代码前，请使用 `cd ~/pychen/DeepTrace` 进入项目文件夹，并使用 `source src/.venv/bin/activate` 激活虚拟环境。
 - 若缺失任何运行代码所需的数据，请主动向我请求。
+- 目前 `asset` 文件夹被我添加到了 `.gitignore` 中，但我希望其中的 `asset/dataset` 也使用 Git 进行管理。当我使用 Git 时，请对这个文件夹进行必要的特殊处理。
 
 ## 3. 渐进式披露：按需加载子项目规范
 
