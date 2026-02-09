@@ -1,6 +1,9 @@
 """Utility functions for video processing."""
 
+import shutil
 import subprocess
+import tarfile
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -148,3 +151,162 @@ def seconds_to_frames(seconds: float, fps: float) -> int:
         Number of frames (rounded)
     """
     return int(round(seconds * fps))
+
+
+def frame_to_image_idx(frame_num: int, video_fps: float, output_fps: float) -> int:
+    """
+    Convert original video frame number to extracted image index.
+
+    Args:
+        frame_num: Original video frame number
+        video_fps: Original video frame rate (e.g., 30)
+        output_fps: Extraction frame rate (e.g., 1)
+
+    Returns:
+        Image index (1-based)
+    """
+    second = frame_num / video_fps
+    image_idx = int(second * output_fps) + 1  # 1-based index
+    return image_idx
+
+
+def pack_frames_to_tar(frames_dir: Path, tar_path: Path) -> bool:
+    """
+    Pack a directory of frames into a tar archive.
+
+    Args:
+        frames_dir: Directory containing frame images
+        tar_path: Output tar file path
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        tar_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with tarfile.open(tar_path, "w") as tar:
+            # Add all jpg files, sorted by name
+            jpg_files = sorted(
+                [f for f in frames_dir.glob("*.jpg") if not f.name.startswith("._")]
+            )
+            for jpg_file in jpg_files:
+                tar.add(jpg_file, arcname=jpg_file.name)
+
+        logger.debug(f"Packed {len(jpg_files)} frames to {tar_path.name}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error packing frames to tar: {e}")
+        return False
+
+
+def extract_frames(
+    input_path: Path,
+    output_dir: Path,
+    start_frame: int,
+    end_frame: int,
+    video_fps: float,
+    output_fps: float = 1.0,
+    pack_tar: bool = False,
+) -> int:
+    """
+    Extract frames from a video at specified intervals using FFmpeg.
+
+    Extracts middle frames of each second interval, not the first frame.
+    For 1 FPS: extracts frame at 0.5s, 1.5s, 2.5s, etc.
+    For 2 FPS: extracts frames at 0.33s, 0.67s, 1.33s, 1.67s, etc.
+
+    Args:
+        input_path: Path to input video
+        output_dir: Directory to save extracted frames (or tar file path if pack_tar=True)
+        start_frame: Start frame number (inclusive)
+        end_frame: End frame number (inclusive)
+        video_fps: Video frame rate
+        output_fps: Extraction rate (frames per second)
+        pack_tar: If True, pack frames into a tar file and delete the directory.
+                  output_dir will be treated as the tar file path (without .tar extension).
+
+    Returns:
+        Number of frames extracted
+    """
+    if not input_path.exists():
+        logger.error(f"Input video not found: {input_path}")
+        return 0
+
+    # If packing to tar, use a temp directory for extraction
+    if pack_tar:
+        temp_dir = Path(tempfile.mkdtemp())
+        frames_dir = temp_dir
+        tar_path = output_dir.parent / f"{output_dir.name}.tar"
+    else:
+        frames_dir = output_dir
+        tar_path = None
+
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    # Calculate time range
+    start_sec = start_frame / video_fps
+    end_sec = end_frame / video_fps
+    duration_sec = end_sec - start_sec
+
+    # Calculate offset to extract middle frames
+    # For 1 FPS: offset = 0.5s (middle of each second)
+    # For 2 FPS: offset = 0.167s (1/6 of a second, first middle point)
+    offset_sec = 0.5 / output_fps
+
+    # Adjust start time to get middle frames
+    adjusted_start = start_sec + offset_sec
+
+    # Build FFmpeg command
+    # -hwaccel videotoolbox for Mac GPU acceleration (falls back to CPU if unavailable)
+    # -ss before -i for fast seek
+    # fps filter to extract at specified rate
+    # -q:v 2 for high quality JPEG (scale 2-31, lower is better)
+    cmd = [
+        "ffmpeg",
+        "-hwaccel", "videotoolbox",
+        "-ss", str(adjusted_start),
+        "-i", str(input_path),
+        "-t", str(duration_sec - offset_sec),
+        "-vf", f"fps={output_fps}",
+        "-q:v", "2",
+        "-start_number", "1",
+        str(frames_dir / "%04d.jpg"),
+        "-y",
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+
+        # Count extracted frames (exclude macOS ._ files)
+        extracted_count = len([f for f in frames_dir.glob("*.jpg") if not f.name.startswith("._")])
+        logger.debug(f"Extracted {extracted_count} frames to {frames_dir.name}")
+
+        # Pack to tar if requested
+        if pack_tar and extracted_count > 0:
+            if pack_frames_to_tar(frames_dir, tar_path):
+                # Clean up temp directory
+                shutil.rmtree(temp_dir)
+            else:
+                logger.error(f"Failed to pack frames to tar, keeping temp dir: {temp_dir}")
+                return 0
+
+        return extracted_count
+
+    except subprocess.CalledProcessError as e:
+        logger.error(f"FFmpeg error extracting frames: {e.stderr[:500]}")
+        if pack_tar:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        return 0
+    except Exception as e:
+        logger.error(f"Unexpected error during frame extraction: {e}")
+        if pack_tar:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        return 0
+
