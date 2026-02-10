@@ -1,6 +1,6 @@
 """Configuration for TraceDINO training and evaluation."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple
 
@@ -11,14 +11,14 @@ class TraceDINOConfig:
 
     # ========== Paths ==========
     backbone_path: Path = Path("pretrained/dinov3/dinov3-vitb16/")
-    train_csv: Path = Path("asset/dataset/train.csv")
-    valid_csv: Path = Path("asset/dataset/valid.csv")
-    test_csv: Path = Path("asset/dataset/test.csv")
+    train_csv: Path = Path("asset/dataset/new/train.csv")
+    valid_csv: Path = Path("asset/dataset/new/valid.csv")
+    test_csv: Path = Path("asset/dataset/new/test.csv")
     query_video_dir: Path = Path("/datadrive2/pychen/deeptrace/query_v/")
-    source_frame_dir: Path = Path("/datadrive2/pychen/deeptrace/vorpus_f/")
+    source_frame_dir: Path = Path("/datadrive2/pychen/deeptrace/new_vorpus/")
     checkpoint_dir: Path = Path("/datadrive2/pychen/deeptrace/checkpoints/tracedino/")
     log_dir: Path = Path("logs/tracedino/")
-    preprocessed_dir: Path = Path("/datadrive2/pychen/deeptrace/preprocessed/")
+    preprocessed_dir: Path = Path("/datadrive2/pychen/deeptrace/new_preprocessed/")
 
     # ========== Model Architecture ==========
     output_dim: int = 512  # Final embedding dimension

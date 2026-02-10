@@ -165,7 +165,8 @@ class TraceDINODataset(Dataset):
     def _get_hard_negatives(self, meta: VideoMetadata, anchor_idx: int) -> List[np.ndarray]:
         """Sample hard negatives from same source video, outside safety radius."""
         anchor_source_frame = self._map_anchor_to_source(meta, anchor_idx)
-        safety_radius_frames = int(self.safety_radius_sec * meta.fps)
+        # Frames are at 1 FPS (output_fps), so safety_radius in frames = safety_radius in seconds
+        safety_radius_frames = int(self.safety_radius_sec)
 
         # Get available source frames
         source_dir = self.source_frame_dir / meta.origin_id
@@ -209,11 +210,11 @@ class TraceDINODataset(Dataset):
         return hard_negatives[:self.n_hard_negatives]
 
     def _map_anchor_to_source(self, meta: VideoMetadata, anchor_idx: int) -> int:
-        """Map anchor frame index to source frame number."""
-        # Linearly map anchor index to source frame range
+        """Map anchor frame index to source frame image index."""
+        # Linearly map anchor index to source image range
         ratio = anchor_idx / max(1, self.n_anchor_frames - 1)
-        source_frame_no = int(meta.gt_start_f + ratio * (meta.gt_end_f - meta.gt_start_f))
-        return source_frame_no
+        source_img_idx = int(meta.gt_start_img + ratio * (meta.gt_end_img - meta.gt_start_img))
+        return source_img_idx
 
     def _get_random_source_frame(self, meta: VideoMetadata) -> np.ndarray:
         """Get a random frame from source video as fallback."""

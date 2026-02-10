@@ -28,16 +28,17 @@ src/tracedino/
 │   ├── preprocessed_dataset.py # 预处理数据集类
 │   └── datamodule.py          # DataModule
 ├── utils/                     # 工具函数
-├── PREPROCESSING.md           # 预处理文档
-└── README.md                  # 方法概述
+└── README.md                  # 完整文档（包含方法概述、预处理说明等）
 ```
 
 ## 3. 核心命令
 
+- **数据预处理**：`python -m src.tracedino.preprocess --split train --batch-size 32 --io-workers 8`
 - **训练**：`python -m src.tracedino.train`
 - **验证**：`python -m src.tracedino.evaluate --checkpoint checkpoints/tracedino/best_model.pth --split test`
 - 如果该子项目进行了更新，请同步更新本文档的「项目结构」部分
 
 ## 4. 渐进式披露
 
-- 如果需要全局快速了解本项目的方法细节，你需要阅读 `src/tracedino/README.md` 中的「方法概述」部分
+- 如果需要全局快速了解本项目的方法细节和使用方法，你需要阅读 `src/tracedino/README.md`
+  - 包含：环境安装、快速开始、数据预处理、训练评估、方法概述、数据集格式等完整信息
