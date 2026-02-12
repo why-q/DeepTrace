@@ -1,6 +1,6 @@
 """Combined loss function for TraceDINO training."""
 
-from typing import Dict
+from typing import Callable, Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -39,6 +39,7 @@ class TraceDINOLoss(nn.Module):
         self,
         features: torch.Tensor,
         labels: torch.Tensor,
+        gather_fn: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Compute combined loss.
@@ -46,13 +47,15 @@ class TraceDINOLoss(nn.Module):
         Args:
             features: L2-normalized embeddings [B, D]
             labels: Integer labels for positive grouping [B]
+            gather_fn: Optional function to gather features/labels across GPUs
+                       for distributed training. Should preserve gradients.
 
         Returns:
             Dict with 'total', 'supcon', 'koleo' losses
         """
         # Compute individual losses
-        loss_supcon = self.supcon(features, labels)
-        loss_koleo = self.koleo(features)
+        loss_supcon = self.supcon(features, labels, gather_fn=gather_fn)
+        loss_koleo = self.koleo(features, gather_fn=gather_fn)
 
         # Combined loss
         loss_total = loss_supcon + self.koleo_weight * loss_koleo

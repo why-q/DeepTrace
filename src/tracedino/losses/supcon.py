@@ -1,5 +1,7 @@
 """Supervised Contrastive Loss for TraceDINO training."""
 
+from typing import Callable, Optional
+
 import torch
 import torch.nn as nn
 
@@ -33,6 +35,7 @@ class SupConLoss(nn.Module):
         self,
         features: torch.Tensor,
         labels: torch.Tensor,
+        gather_fn: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
     ) -> torch.Tensor:
         """
         Compute supervised contrastive loss.
@@ -40,20 +43,31 @@ class SupConLoss(nn.Module):
         Args:
             features: L2-normalized embeddings [B, D]
             labels: Integer labels [B] where same label = same class
+            gather_fn: Optional function to gather features/labels across GPUs
+                       for distributed training. Should preserve gradients.
 
         Returns:
             Scalar loss value
         """
         device = features.device
-        batch_size = features.shape[0]
+
+        # Gather features and labels from all GPUs if in distributed mode
+        if gather_fn is not None:
+            all_features = gather_fn(features)
+            all_labels = gather_fn(labels)
+        else:
+            all_features = features
+            all_labels = labels
+
+        batch_size = all_features.shape[0]
 
         # Compute similarity matrix
         # [B, B] where sim[i, j] = z_i · z_j (cosine similarity for L2-normalized features)
-        similarity = torch.matmul(features, features.T) / self.temperature
+        similarity = torch.matmul(all_features, all_features.T) / self.temperature
 
         # Create mask for positive pairs (same label, excluding self)
-        labels = labels.contiguous().view(-1, 1)
-        mask_positives = torch.eq(labels, labels.T).float().to(device)
+        all_labels = all_labels.contiguous().view(-1, 1)
+        mask_positives = torch.eq(all_labels, all_labels.T).float().to(device)
 
         # Create self mask (diagonal)
         mask_self = torch.eye(batch_size, device=device)

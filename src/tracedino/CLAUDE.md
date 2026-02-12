@@ -34,7 +34,8 @@ src/tracedino/
 ## 3. 核心命令
 
 - **数据预处理**：`python -m src.tracedino.preprocess --split train --batch-size 32 --io-workers 8`
-- **训练**：`python -m src.tracedino.train`
+- **单 GPU 训练**：`python -m src.tracedino.train`
+- **多 GPU 训练**：`torchrun --nproc_per_node=4 --standalone -m src.tracedino.train`
 - **验证**：`python -m src.tracedino.evaluate --checkpoint checkpoints/tracedino/best_model.pth --split test`
 - 如果该子项目进行了更新，请同步更新本文档的「项目结构」部分
 

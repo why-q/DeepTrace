@@ -18,7 +18,7 @@ class TraceDINOConfig:
     source_frame_dir: Path = Path("/datadrive2/pychen/deeptrace/new_vorpus/")
     checkpoint_dir: Path = Path("/datadrive2/pychen/deeptrace/checkpoints/tracedino/")
     log_dir: Path = Path("logs/tracedino/")
-    preprocessed_dir: Path = Path("/datadrive2/pychen/deeptrace/new_preprocessed/")
+    preprocessed_dir: Path = Path("/datadrive2/pychen/deeptrace/preprocessed/")
 
     # ========== Model Architecture ==========
     output_dim: int = 512  # Final embedding dimension
@@ -52,16 +52,17 @@ class TraceDINOConfig:
     use_preprocessed: bool = True  # Use preprocessed dataset
 
     # ========== Distributed Training ==========
-    num_workers: int = 8  # DataLoader workers
+    num_workers: int = 16  # DataLoader workers
     distributed: bool = False  # Enable distributed training
+    rank: int = 0  # Global rank for DDP
     local_rank: int = 0  # Local rank for DDP
     world_size: int = 1  # World size for DDP
 
     # ========== Logging and Checkpointing ==========
-    log_interval: int = 100  # Log every N batches
+    log_interval: int = 1  # Log every N batches
     save_interval: int = 1  # Save checkpoint every N epochs
-    eval_interval: int = 1  # Evaluate on validation set every N epochs
-    use_tensorboard: bool = True  # Enable tensorboard logging
+    eval_interval: int = 5  # Evaluate on validation set every N epochs
+    use_tensorboard: bool = False  # Enable tensorboard logging
 
     # ========== Mixed Precision Training ==========
     use_amp: bool = True  # Enable automatic mixed precision

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 from torch.utils.data import DataLoader, Dataset
+from torch.utils.data.distributed import DistributedSampler
 
 from .augmentations import TraceDINOTransform
 from .dataset import TraceDINODataset
@@ -24,7 +25,7 @@ class TraceDINODataModule:
         query_video_dir: Directory containing query videos
         source_frame_dir: Directory containing source frames
         image_size: Input image size
-        batch_size: Batch size for training
+        batch_size: Global batch size for training (will be divided by world_size)
         eval_batch_size: Batch size for evaluation
         num_workers: Number of DataLoader workers
         n_anchor_frames: Number of anchor frames per video
@@ -32,6 +33,9 @@ class TraceDINODataModule:
         safety_radius_sec: Safety radius for hard negative sampling
         use_preprocessed: Whether to use preprocessed dataset
         preprocessed_dir: Directory containing preprocessed data
+        distributed: Whether to use distributed training
+        world_size: Number of processes in distributed training
+        rank: Global rank of current process
     """
 
     def __init__(
@@ -50,6 +54,9 @@ class TraceDINODataModule:
         safety_radius_sec: float = 15.0,
         use_preprocessed: bool = False,
         preprocessed_dir: Optional[Path] = None,
+        distributed: bool = False,
+        world_size: int = 1,
+        rank: int = 0,
     ):
         self.train_csv = Path(train_csv)
         self.valid_csv = Path(valid_csv)
@@ -65,6 +72,12 @@ class TraceDINODataModule:
         self.safety_radius_sec = safety_radius_sec
         self.use_preprocessed = use_preprocessed
         self.preprocessed_dir = Path(preprocessed_dir) if preprocessed_dir else None
+        self.distributed = distributed
+        self.world_size = world_size
+        self.rank = rank
+
+        # Calculate per-GPU batch size for distributed training
+        self.per_gpu_batch_size = batch_size // world_size if distributed else batch_size
 
         # Initialize transforms
         self.train_transform = TraceDINOTransform(image_size=image_size, is_training=True)
@@ -74,6 +87,9 @@ class TraceDINODataModule:
         self._train_dataset = None
         self._valid_dataset = None
         self._test_dataset = None
+
+        # Distributed sampler (lazy initialization)
+        self._train_sampler = None
 
     def _create_dataset(
         self,
@@ -125,14 +141,46 @@ class TraceDINODataModule:
 
     def train_dataloader(self) -> DataLoader:
         """Get training DataLoader."""
-        return DataLoader(
-            self.train_dataset(),
-            batch_size=self.batch_size,
-            shuffle=True,
-            num_workers=self.num_workers,
-            pin_memory=True,
-            drop_last=True,
-        )
+        dataset = self.train_dataset()
+
+        if self.distributed:
+            # Use DistributedSampler for distributed training
+            self._train_sampler = DistributedSampler(
+                dataset,
+                num_replicas=self.world_size,
+                rank=self.rank,
+                shuffle=True,
+                drop_last=True,
+            )
+            return DataLoader(
+                dataset,
+                batch_size=self.per_gpu_batch_size,
+                sampler=self._train_sampler,
+                num_workers=self.num_workers,
+                pin_memory=True,
+                drop_last=True,
+            )
+        else:
+            return DataLoader(
+                dataset,
+                batch_size=self.batch_size,
+                shuffle=True,
+                num_workers=self.num_workers,
+                pin_memory=True,
+                drop_last=True,
+            )
+
+    def set_epoch(self, epoch: int):
+        """
+        Set epoch for DistributedSampler to ensure proper shuffling.
+
+        Must be called at the beginning of each epoch in distributed training.
+
+        Args:
+            epoch: Current epoch number
+        """
+        if self._train_sampler is not None:
+            self._train_sampler.set_epoch(epoch)
 
     def valid_dataloader(self) -> DataLoader:
         """Get validation DataLoader."""

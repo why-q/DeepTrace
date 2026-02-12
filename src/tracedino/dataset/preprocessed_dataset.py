@@ -67,23 +67,39 @@ class PreprocessedTraceDINODataset(Dataset):
 
         # Load all video metadata and filter out invalid samples
         self.video_dirs = []
-        skipped = 0
+        skipped_samples = []  # Store detailed info about skipped samples
         for d in sorted(self.preprocessed_dir.iterdir()):
             if not d.is_dir() or not (d / "meta.json").exists():
                 continue
-            if self._is_valid_sample(d):
+            is_valid, skip_reason = self._is_valid_sample(d)
+            if is_valid:
                 self.video_dirs.append(d)
             else:
-                skipped += 1
+                skipped_samples.append({
+                    "video_id": d.name,
+                    "reason": skip_reason
+                })
 
-        if skipped > 0:
-            print(f"Skipped {skipped} samples with out-of-range frame numbers")
+        if skipped_samples:
+            print(f"\n{'='*80}")
+            print(f"Skipped {len(skipped_samples)} samples with out-of-range frame numbers:")
+            print(f"{'='*80}")
+            for info in skipped_samples:
+                print(f"  Video ID: {info['video_id']}")
+                print(f"  Reason: {info['reason']}")
+                print(f"  {'-'*78}")
+            print(f"{'='*80}\n")
 
         # Cache metadata
         self._metadata_cache: Dict[str, dict] = {}
 
-    def _is_valid_sample(self, video_dir: Path) -> bool:
-        """Check if sample has valid source frame numbers."""
+    def _is_valid_sample(self, video_dir: Path) -> Tuple[bool, str]:
+        """
+        Check if sample has valid source frame numbers.
+
+        Returns:
+            Tuple of (is_valid, reason_if_invalid)
+        """
         try:
             with open(video_dir / "meta.json") as f:
                 meta = json.load(f)
@@ -92,22 +108,39 @@ class PreprocessedTraceDINODataset(Dataset):
             vorpus_dir = self.source_frame_dir / origin_id
 
             if not vorpus_dir.exists():
-                return False
+                return False, f"Source directory not found: {vorpus_dir}"
 
             # Get max available frame number
             frame_files = list(vorpus_dir.glob("*.jpg"))
             if not frame_files:
-                return False
+                return False, f"No frames found in source directory: {vorpus_dir}"
             max_frame = max(int(f.stem) for f in frame_files)
 
             # Check all anchor source frames are in range
-            for anchor in meta["anchors"]:
-                if anchor["source_frame_no"] > max_frame:
-                    return False
+            out_of_range_anchors = []
+            for i, anchor in enumerate(meta["anchors"]):
+                source_frame_no = anchor["source_frame_no"]
+                if source_frame_no > max_frame:
+                    out_of_range_anchors.append({
+                        "anchor_idx": i,
+                        "requested_frame": source_frame_no,
+                        "max_available": max_frame,
+                        "out_of_range_by": source_frame_no - max_frame
+                    })
 
-            return True
-        except Exception:
-            return False
+            if out_of_range_anchors:
+                reason_parts = [f"Origin: {origin_id}, Max frame: {max_frame}"]
+                for anchor_info in out_of_range_anchors:
+                    reason_parts.append(
+                        f"Anchor {anchor_info['anchor_idx']}: "
+                        f"requested frame {anchor_info['requested_frame']} "
+                        f"(out of range by {anchor_info['out_of_range_by']})"
+                    )
+                return False, " | ".join(reason_parts)
+
+            return True, ""
+        except Exception as e:
+            return False, f"Error loading metadata: {str(e)}"
 
     def __len__(self) -> int:
         return len(self.video_dirs) * self.n_anchor_frames

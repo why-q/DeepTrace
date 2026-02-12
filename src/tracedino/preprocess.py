@@ -190,14 +190,35 @@ class VideoFrameExtractor:
         return results
 
 
-def map_anchor_to_source(meta: VideoMetadata, anchor_idx: int, n_anchors: int = 2) -> int:
-    """Map anchor frame index to source frame image index.
+def map_anchor_to_source(
+    meta: VideoMetadata,
+    anchor_idx: int,
+    n_anchors: int = 2,
+    max_available_frame: Optional[int] = None,
+) -> int:
+    """
+    Map anchor frame index to source frame image index.
 
     New dataset has pre-computed gt_start_img and gt_end_img, use them directly.
+
+    Args:
+        meta: Video metadata containing gt_start_img and gt_end_img
+        anchor_idx: Index of the anchor frame (0 to n_anchors-1)
+        n_anchors: Total number of anchor frames
+        max_available_frame: Maximum available frame number in source video.
+                            If provided, clamps the result to avoid out-of-range errors.
+
+    Returns:
+        Source frame image index (clamped to max_available_frame if provided)
     """
     ratio = anchor_idx / max(1, n_anchors - 1)
     # Directly use pre-computed image indices
     source_img_idx = int(meta.gt_start_img + ratio * (meta.gt_end_img - meta.gt_start_img))
+
+    # Clamp to available range if provided (fixes off-by-one errors)
+    if max_available_frame is not None:
+        source_img_idx = min(source_img_idx, max_available_frame)
+
     return source_img_idx
 
 
@@ -301,6 +322,15 @@ def process_video(
     if len(anchor_frames) < n_anchors:
         return False
 
+    # Get max available frame in source video to avoid out-of-range errors
+    source_dir = source_frame_dir / meta.origin_id
+    if not source_dir.exists():
+        return False
+    available_frames = [int(f.stem) for f in source_dir.glob("*.jpg")]
+    if not available_frames:
+        return False
+    max_available_frame = max(available_frames)
+
     # Process each anchor
     anchors_data = []
     detections_data = {}
@@ -310,8 +340,8 @@ def process_video(
         anchor_path = video_output_dir / f"anchor_{anchor_idx}.jpg"
         cv2.imwrite(str(anchor_path), anchor_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
 
-        # Map to source frame
-        source_frame_no = map_anchor_to_source(meta, anchor_idx, n_anchors)
+        # Map to source frame (with clamping to avoid out-of-range)
+        source_frame_no = map_anchor_to_source(meta, anchor_idx, n_anchors, max_available_frame)
         anchors_data.append({
             "frame_idx": frame_idx,
             "source_frame_no": source_frame_no,
@@ -456,11 +486,20 @@ def prepare_single_video(
     if len(anchor_frames) < n_anchors:
         return None
 
+    # Get max available frame in source video to avoid out-of-range errors
+    source_dir = source_frame_dir / meta.origin_id
+    if not source_dir.exists():
+        return None
+    available_frames = [int(f.stem) for f in source_dir.glob("*.jpg")]
+    if not available_frames:
+        return None
+    max_available_frame = max(available_frames)
+
     # 读取源帧并构建锚点元数据
     source_frames = []
     anchors_data = []
     for anchor_idx, (frame_idx, _) in enumerate(anchor_frames):
-        source_frame_no = map_anchor_to_source(meta, anchor_idx, n_anchors)
+        source_frame_no = map_anchor_to_source(meta, anchor_idx, n_anchors, max_available_frame)
         anchors_data.append({
             "frame_idx": frame_idx,
             "source_frame_no": source_frame_no,

@@ -1,5 +1,7 @@
 """KoLeo entropy regularization loss for uniform feature distribution."""
 
+from typing import Callable, Optional
+
 import torch
 import torch.nn as nn
 
@@ -23,25 +25,37 @@ class KoLeoLoss(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, features: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        features: torch.Tensor,
+        gather_fn: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
+    ) -> torch.Tensor:
         """
         Compute KoLeo entropy regularization loss.
 
         Args:
             features: L2-normalized embeddings [B, D]
+            gather_fn: Optional function to gather features across GPUs
+                       for distributed training. Should preserve gradients.
 
         Returns:
             Scalar loss value
         """
-        batch_size = features.size(0)
+        # Gather features from all GPUs if in distributed mode
+        if gather_fn is not None:
+            all_features = gather_fn(features)
+        else:
+            all_features = features
+
+        batch_size = all_features.size(0)
 
         if batch_size == 1:
             # Cannot compute pairwise distances with single sample
-            return torch.tensor(0.0, device=features.device, requires_grad=True)
+            return torch.tensor(0.0, device=all_features.device, requires_grad=True)
 
         # Compute pairwise cosine similarity matrix
         # For L2-normalized features: ||z_i - z_j||^2 = 2 - 2*z_i·z_j
-        similarity = torch.matmul(features, features.T)  # [B, B]
+        similarity = torch.matmul(all_features, all_features.T)  # [B, B]
 
         # Set diagonal to -inf to exclude self-distances
         similarity.fill_diagonal_(-float("inf"))
